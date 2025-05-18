@@ -2,6 +2,7 @@
 import cv2
 import cvzone
 import numpy as np
+import streamlit as st
 
 # detect BEIGE
 def detectColor(frame):
@@ -30,11 +31,16 @@ def preprocessing(frame):
 
 cap = cv2.VideoCapture(0)
 
+st.title("Alkansya: A Simple Philippine Peso Counter")
+frame1 = st.empty()
+frame2 = st.empty()
+stopButton = st.button("Stop Program")
+
 mask = None
 referenceSize = None
 
 # loops until pressing Enter key
-while True:
+while True and not stopButton:
     ret, frame = cap.read()
 
     frame = cv2.flip(frame, 1) # flips frame to reverse camera
@@ -49,7 +55,6 @@ while True:
     if coloredCircle is not None:
         referenceSize = cv2.contourArea(coloredCircle)
         cv2.drawContours(frame, [coloredCircle], -1, (0,255,0), 3)
-        cv2.putText(frame, "Reference", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
 
     if conFound and referenceSize:
         for count, contour in enumerate(conFound):
@@ -110,11 +115,13 @@ while True:
                 # bitwise or black and coinmask
                 black = cv2.bitwise_or(black, coinMask)
 
-    cv2.putText(black, f'php{money}', (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
-    stack = cvzone.stackImages([frame, processedFrame, coinContours, black], 2, 1)
-    cv2.imshow('Alkansya', stack)
-    
-    if cv2.waitKey(1) == 13: # hitting Enter exits the camera capture
+    cv2.putText(frame, f'php{money}', (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+    # stack = cvzone.stackImages([frame, processedFrame, coinContours, black], 2, 1)
+    # cv2.imshow('Alkansya', stack)
+
+    frame1.image(frame)
+
+    if cv2.waitKey(1) == 13 or stopButton: # hitting Enter exits the camera capture
         break
         
 # exit generated windows
