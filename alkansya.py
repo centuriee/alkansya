@@ -3,6 +3,20 @@ import cv2
 import cvzone
 import numpy as np
 
+# detect BEIGE
+def detectColor(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    lower_beige = np.array([15, 30, 100])
+    upper_beige = np.array([35, 120, 255])
+    
+    mask = cv2.inRange(hsv, lower_beige, upper_beige)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        return max(contours, key=cv2.contourArea)
+    return None
+
+# preprocessing function
 def preprocessing(frame):
     frame = cv2.GaussianBlur(frame, (5, 5), 3) # blur image
     frame = cv2.Canny(frame, 130, 180) # edge detection
@@ -15,7 +29,9 @@ def preprocessing(frame):
     return frame
 
 cap = cv2.VideoCapture(0)
+
 mask = None
+referenceSize = None
 
 # loops until pressing Enter key
 while True:
@@ -27,12 +43,54 @@ while True:
     mask = np.zeros_like(frame)
     black = np.zeros_like(frame)
 
-    if conFound:
-        for contour in conFound:
+    money = 0
+
+    coloredCircle = detectColor(frame)
+    if coloredCircle is not None:
+        referenceSize = cv2.contourArea(coloredCircle)
+        cv2.drawContours(frame, [coloredCircle], -1, (0,255,0), 3)
+        cv2.putText(frame, "Reference", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+
+    if conFound and referenceSize:
+        for count, contour in enumerate(conFound):
             peri = cv2.arcLength(contour['cnt'], True)
             approx = cv2.approxPolyDP(contour['cnt'], 0.02 * peri, True)
+
+            # Skip if this contour is the reference circle
+            if coloredCircle is not None:
+                # Calculate how much the current contour overlaps with reference
+                mask_ref = np.zeros_like(frame[:,:,0])
+                cv2.drawContours(mask_ref, [coloredCircle], -1, 255, -1)
+                
+                mask_coin = np.zeros_like(frame[:,:,0])
+                cv2.drawContours(mask_coin, [contour['cnt']], -1, 255, -1)
+                
+                overlap = cv2.bitwise_and(mask_ref, mask_coin)
+                overlap_pixels = cv2.countNonZero(overlap)
+                
+                # Skip if more than 50% overlap with reference
+                if overlap_pixels > 0.5 * cv2.countNonZero(mask_ref):
+                    continue
             
             if len(approx) > 5:
+                area = contour['area']
+                x, y, w, h = contour['bbox']
+                value = 0
+                
+                relativeSize = area / referenceSize
+
+                if relativeSize < 1:
+                    value = 1
+                    money += 1
+                elif 1 <= relativeSize < 1.3:
+                    value = 5
+                    money += 5
+                elif relativeSize > 1.3:
+                    value = 20
+                    money += 20
+
+                cv2.putText(frame, str(value), (x,y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
                 mask = np.zeros_like(frame[:,:,0])
             
                 # Draw filled white contour on mask
@@ -52,6 +110,7 @@ while True:
                 # bitwise or black and coinmask
                 black = cv2.bitwise_or(black, coinMask)
 
+    cv2.putText(black, f'php{money}', (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
     stack = cvzone.stackImages([frame, processedFrame, coinContours, black], 2, 1)
     cv2.imshow('Alkansya', stack)
     
