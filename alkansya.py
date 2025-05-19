@@ -3,7 +3,7 @@ import cvzone
 import numpy as np
 import streamlit as st
 
-# Detect RED reference pin
+# Detect red reference
 def detectColor(frame):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     # Red color spans two ranges in HSV
@@ -26,7 +26,7 @@ def detectColor(frame):
 # Preprocess the frame
 def preprocessing(frame):
     frame = cv2.GaussianBlur(frame, (5, 5), 3)
-    frame = cv2.Canny(frame, 130, 180)
+    frame = cv2.Canny(frame, 110, 150)
     kernel = np.ones((3, 3), np.uint8)
     frame = cv2.dilate(frame, kernel, iterations=1)
     frame = cv2.morphologyEx(frame, cv2.MORPH_CLOSE, kernel)
@@ -34,7 +34,7 @@ def preprocessing(frame):
     return frame
 
 # Streamlit interface
-st.title("Alkansya: A Simple Philippine Peso Counter")
+st.title("Alkansya: A Philippine Peso Counter")
 
 mode = st.radio("Choose Input Mode", ("Live Camera Feed", "Upload Image"))
 frame1 = st.empty()
@@ -42,6 +42,8 @@ frame2 = st.empty()
 
 if mode == "Live Camera Feed":
     cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 for manual mode on many systems
+    cap.set(cv2.CAP_PROP_EXPOSURE, -6)  # Set exposure (smaller value = brighter; camera dependent)
     stopButton = st.button("Stop Program")
     referenceSize = None
 
@@ -54,6 +56,8 @@ if mode == "Live Camera Feed":
         black = np.zeros_like(frame)
 
         money = 0
+        coin_data = []
+
         coloredCircle = detectColor(frame)
         if coloredCircle is not None:
             referenceSize = cv2.contourArea(coloredCircle)
@@ -61,7 +65,7 @@ if mode == "Live Camera Feed":
 
         if conFound and referenceSize:
             for contour in conFound:
-                # Skip reference overlap
+                # Skip overlap with reference
                 if coloredCircle is not None:
                     mask_ref = np.zeros_like(frame[:,:,0])
                     cv2.drawContours(mask_ref, [coloredCircle], -1, 255, -1)
@@ -80,29 +84,69 @@ if mode == "Live Camera Feed":
                     value = 0
 
                     if relativeSize < 0.45:
-                        pass
-                    elif 0.45 < relativeSize < 0.55:
+                        continue
+
+                    elif 0.45 < relativeSize < 0.65:
                         value = 1
                         money += 1
-                    elif 0.55 <= relativeSize < 0.9:
-                        value = 5
-                        money += 5
-                    elif relativeSize <= 0.9:
+                        cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
+            
+                    elif 0.65 <= relativeSize < 0.9:
+                        # Classify later based on gray ratio
+                        coin_mask = np.zeros_like(frame[:,:,0])
+                        cv2.drawContours(coin_mask, [contour['cnt']], -1, 255, -1)
+                        coin_roi = cv2.bitwise_and(frame, frame, mask=coin_mask)
+                        hsv_roi = cv2.cvtColor(coin_roi, cv2.COLOR_BGR2HSV)
+
+                        # Define gray color bounds for #525252
+                        lower_gray = np.array([0, 0, 50])
+                        upper_gray = np.array([180, 50, 130])
+                        gray_mask = cv2.inRange(hsv_roi, lower_gray, upper_gray)
+
+                        gray_pixels = cv2.countNonZero(gray_mask)
+                        total_pixels = cv2.countNonZero(coin_mask)
+                        gray_ratio = gray_pixels / total_pixels if total_pixels > 0 else 0
+
+                        coin_data.append({
+                            'contour': contour,
+                            'bbox': (x, y),
+                            'gray_ratio': gray_ratio,
+                            'coin_mask': coin_mask
+                        })
+
+                        cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
+
+                    elif relativeSize >= 0.9:
                         value = 20
                         money += 20
+                        cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
 
-                    cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    mask = np.zeros_like(frame[:,:,0])
-                    cv2.drawContours(mask, [contour['cnt']], -1, 255, -1)
-                    coinMask = cv2.bitwise_and(frame, frame, mask=mask)
-                    coinMask = (coinMask * 0.5).astype(np.uint8)
-                    hsv = cv2.cvtColor(coinMask, cv2.COLOR_BGR2HSV)
-                    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.5, 0, 255)
-                    coinMask = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-                    black = cv2.bitwise_or(black, coinMask)
+        # Post-process gray_ratio-based coins (5 vs 10 pesos)
+        if coin_data:
+            gray_values = [c['gray_ratio'] for c in coin_data]
+            min_gray = min(gray_values)
+            max_gray = max(gray_values)
+            mid_gray = (min_gray + max_gray) / 2
+
+            for c in coin_data:
+                x, y = c['bbox']
+                if c['gray_ratio'] < mid_gray:
+                    value = 5
+                    money += 5
+                else:
+                    value = 10
+                    money += 10
+
+                cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                cv2.putText(frame, f"{c['gray_ratio']}", (x, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
 
         cv2.putText(frame, f'php{money}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         frame1.image(frame, channels="BGR")
+
+        # stack = cvzone.stackImages([frame, processedFrame, coinContours, black], 2, 1)
+        # cv2.imshow('Alkansya', stack)
 
         if cv2.waitKey(1) == 13:
             break
@@ -152,13 +196,14 @@ elif mode == "Upload Image":
                     if relativeSize < 0.45:
                         continue
 
-                    elif 0.45 < relativeSize < 0.55:
+                    elif 0.45 < relativeSize < 0.65:
                         value = 1
                         money += 1
-                        cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        # cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
+                        cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                        cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+                        cv2.drawContours(frame, [contour['cnt']], -1, (200, 200, 200), 2)
             
-                    elif 0.55 <= relativeSize < 0.9:
+                    elif 0.65 <= relativeSize < 0.9:
                         # Classify later based on gray ratio
                         coin_mask = np.zeros_like(frame[:,:,0])
                         cv2.drawContours(coin_mask, [contour['cnt']], -1, 255, -1)
@@ -184,8 +229,9 @@ elif mode == "Upload Image":
                     elif relativeSize >= 0.9:
                         value = 20
                         money += 20
-                        cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        # cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
+                        cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 1)
+                        cv2.drawContours(frame, [contour['cnt']], -1, (0, 165, 255), 2)
 
         # Post-process gray_ratio-based coins (5 vs 10 pesos)
         if coin_data:
@@ -199,12 +245,17 @@ elif mode == "Upload Image":
                 if c['gray_ratio'] < mid_gray:
                     value = 5
                     money += 5
+                    cv2.drawContours(frame, [contour['cnt']], -1, (0, 255, 255), 2)
+                    cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1)
+                    cv2.putText(frame, f"{c['gray_ratio']}", (x, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1)
                 else:
                     value = 10
                     money += 10
+                    cv2.drawContours(frame, [contour['cnt']], -1, (200, 200, 200), 2)
+                    cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                    cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+                    cv2.putText(frame, f"{c['gray_ratio']}", (x, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
 
-                cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                # cv2.putText(frame, f"{c['gray_ratio']}", (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)
-
-        cv2.putText(frame, f'php{money}', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(frame, f'php{money}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 10)
         frame1.image(frame, channels="BGR")
