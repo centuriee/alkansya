@@ -62,33 +62,37 @@ def detectColor(frame):
 
 # this function preprocesses the frame
 def preprocessing(frame):
-    frame = cv2.GaussianBlur(frame, (5, 5), 3)
-    frame = cv2.Canny(frame, 110, 150)
+    frame = cv2.GaussianBlur(frame, (5, 5), 3) # blur
+    frame = cv2.Canny(frame, 110, 150) # contouring
 
-    kernel = np.ones((3, 3), np.uint8)
-    frame = cv2.dilate(frame, kernel, iterations=1)
-    frame = cv2.morphologyEx(frame, cv2.MORPH_CLOSE, kernel)
-    frame = cv2.erode(frame, kernel, iterations=1)
+    kernel = np.ones((3, 3), np.uint8) # defining kernel for dilation and erosion
+    frame = cv2.dilate(frame, kernel, iterations = 1) # thicken lines
+    frame = cv2.morphologyEx(frame, cv2.MORPH_CLOSE, kernel) # close empty gaps between lines
+    frame = cv2.erode(frame, kernel, iterations = 1) # thinnen lines
 
     return frame
 
-def process_coins(frame, referenceSize=None):
-    processedFrame = preprocessing(frame)
-    coinContours, conFound = cvzone.findContours(frame, processedFrame, minArea=20)
-    mask = np.zeros_like(frame)
-    black = np.zeros_like(frame)
+# this function processes the frame, detects coins present, classifies each coin's denomination
+# and returns the frame with the processed info
+def process_coins(frame, referenceSize = None):
+    processedFrame = preprocessing(frame) # preprocessing the image
+    coinContours, conFound = cvzone.findContours(frame, processedFrame, minArea = 200) # detects all contours with minimum area of 20
+    mask = np.zeros_like(frame) # for checking on cvzone
+    black = np.zeros_like(frame) # for checking on cvzone
 
-    money = 0
-    coinData = []
+    money = 0 # money counter printed on top left
+    coinData = [] # data for 5 and 10 peso coin classification
 
+    # detect red bottle cap
     coloredCircle = detectColor(frame)
     if coloredCircle is not None:
-        referenceSize = cv2.contourArea(coloredCircle)
-        cv2.drawContours(frame, [coloredCircle], -1, (0, 255, 0), 3)
+        referenceSize = cv2.contourArea(coloredCircle) # assign reference size to compare all coins to
+        cv2.drawContours(frame, [coloredCircle], -1, (0, 255, 0), 3) # draw contour around reference
 
+    # runs if there are any contours found
     if conFound and referenceSize:
         for contour in conFound:
-            # Skip overlap with reference
+            # skip overlap with reference
             if coloredCircle is not None:
                 maskRef = np.zeros_like(frame[:, :, 0])
                 cv2.drawContours(maskRef, [coloredCircle], -1, 255, -1)
@@ -98,42 +102,56 @@ def process_coins(frame, referenceSize=None):
                 if cv2.countNonZero(overlap) > 0.5 * cv2.countNonZero(maskRef):
                     continue
 
+            # get number of sizes
             peri = cv2.arcLength(contour['cnt'], True)
             approx = cv2.approxPolyDP(contour['cnt'], 0.02 * peri, True)
+
+            # if sides of contour is more than 5, it is a circle
             if len(approx) > 5:
                 area = contour['area']
                 x, y, w, h = contour['bbox']
-                relativeSize = area / referenceSize
+                relativeSize = area / referenceSize # calculate its relative size
                 value = 0
 
+                # for misdetected contours
                 if relativeSize < 0.45:
                     continue
 
+                # 1 peso coin
                 elif 0.45 < relativeSize < 0.65:
                     value = 1
                     money += 1
+
+                    # printing and encircling for pretty
                     cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
                     cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
                     cv2.drawContours(frame, [contour['cnt']], -1, (200, 200, 200), 2)
         
+                # 5 or 10 peso coin
                 elif 0.65 <= relativeSize < 0.9:
-                    # Classify later based on gray ratio
+                    # classify later based on gray ratio
                     coinMask = np.zeros_like(frame[:, :, 0])
                     cv2.drawContours(coinMask, [contour['cnt']], -1, 255, -1)
                     coinROI = cv2.bitwise_and(frame, frame, mask=coinMask)
                     hsvROI = cv2.cvtColor(coinROI, cv2.COLOR_BGR2HSV)
 
-                    # Define gray color bounds for #525252
+                    # DETECT GRAY CONTENT IN COIN
+                    # IF LOTS, 10 PESO
+                    # IF LITTLE, 5 PESO
+
+                    # define gray color bounds for #525252 (gray-silver)
                     lowerGray = np.array([0, 0, 50])
                     upperGray = np.array([180, 50, 130])
                     grayMask = cv2.inRange(hsvROI, lowerGray, upperGray)
 
+                    # counting amount of gray pixels compared to total pixels inside contour
                     grayPixels = cv2.countNonZero(grayMask)
                     totalPixels = cv2.countNonZero(coinMask)
                     grayRatio = grayPixels / totalPixels if totalPixels > 0 else 0
 
                     coinSize = relativeSize
 
+                    # append data to pre-initialized array for processing
                     coinData.append({
                         'contour': contour,
                         'bbox': (x, y),
@@ -142,59 +160,80 @@ def process_coins(frame, referenceSize=None):
                         'relativeSize': coinSize
                     })
 
+                # 20 peso coin
                 elif relativeSize >= 0.9:
                     value = 20
                     money += 20
+
+                    # printing and encircling for pretty
                     cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
                     cv2.putText(frame, str(relativeSize), (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 1)
                     cv2.drawContours(frame, [contour['cnt']], -1, (0, 165, 255), 2)
 
-    # Post-process grayRatio-based coins (5 vs 10 pesos)
+    # post-processing gray ratio based coins (5 vs 10 pesos)
     if coinData:
         grayValues = [c['grayRatio'] for c in coinData]
         grayMinimum = min(grayValues)
         grayMaximum = max(grayValues)
+        # use midpoint to classify, if lower 50% = 5 pesos, if higher 50% = 10 pesos
         grayMidpoint = (grayMinimum + grayMaximum) / 2
 
         for c in coinData:
             x, y = c['bbox']
+
+            # 5 pesos
             if c['grayRatio'] < grayMidpoint:
                 value = 5
                 money += 5
                 cv2.drawContours(frame, [c['contour']['cnt']], -1, (0, 255, 255), 2)
+
+                # printing and encircling for pretty
                 cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                 cv2.putText(frame, f"{c['relativeSize']:.3f}", (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1)
                 cv2.putText(frame, f"{c['grayRatio']}", (x, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 1)
+
+            # 10 pesos
             else:
                 value = 10
                 money += 10
+
+                # printing and encircling for pretty
                 cv2.drawContours(frame, [c['contour']['cnt']], -1, (200, 200, 200), 2)
                 cv2.putText(frame, str(value), (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
                 cv2.putText(frame, f"{c['relativeSize']:.3f}", (x, y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
                 cv2.putText(frame, f"{c['grayRatio']}", (x, y + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
 
-    cv2.putText(frame, f'php{money}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 10)
+    cv2.putText(frame, f'php{money}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 255), 10) # total money on top left
     return frame, money
 
+# main function
 if __name__ == '__main__':
-    # Streamlit interface
+
+    # streamlit interface
+    money = 0
     st.title("Alkansya: A Philippine Peso Counter")
 
-    mode = st.radio("Choose Input Mode", ("Live Camera Feed", "Upload Image"))
+    mode = st.radio("Choose Input Mode", ("Live Camera Feed", "Upload Image")) # toggling input mode
     frame1 = st.empty()
 
     if mode == "Live Camera Feed":
         cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 for manual mode on many systems
-        cap.set(cv2.CAP_PROP_EXPOSURE, -6)  # Set exposure (smaller value = brighter; camera dependent)
+        # setting auto exposure parameters bc my camera is weird
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
+        cap.set(cv2.CAP_PROP_EXPOSURE, -6)
         stopButton = st.button("Stop Program")
         referenceSize = None
 
+        # while not stopping program, read and process frame
         while True and not stopButton:
             ret, frame = cap.read()
             frame = cv2.flip(frame, 1)
             processed_frame, money = process_coins(frame, referenceSize)
-            frame1.image(processed_frame, channels="BGR")
+            frame1.image(processed_frame, channels = "BGR")
+
+            # UNCOMMENT THIS FOR NON-GUI INTERFACE
+            # stack = cvzone.stackImages([frame, processedFrame, coinContours, black], 2, 1)
+            # cv2.imshow('Alkansya', stack)
 
             if cv2.waitKey(1) == 13:
                 break
@@ -205,8 +244,13 @@ if __name__ == '__main__':
     elif mode == "Upload Image":
         file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
         if file is not None:
+            # read and process uploaded image
             fileBytes = np.asarray(bytearray(file.read()), dtype=np.uint8)
             frame = cv2.imdecode(fileBytes, 1)
             frame = cv2.flip(frame, 1)
             processed_frame, money = process_coins(frame)
-            frame1.image(processed_frame, channels="BGR")
+            frame1.image(processed_frame, channels = "BGR")
+
+            # UNCOMMENT THIS FOR NON-GUI INTERFACE
+            # stack = cvzone.stackImages([frame, processedFrame, coinContours, black], 2, 1)
+            # cv2.imshow('Alkansya', stack)
