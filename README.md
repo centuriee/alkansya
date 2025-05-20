@@ -1,4 +1,4 @@
-\ALKANSYA - a simple Philippine Peso coin counter
+ALKANSYA - a simple Philippine Peso coin counter
 CMSC 191 Final Project
 
 This OpenCV program detects Philippine coins and calculates the total denomination of the coins present on frame through size and color analysis.
